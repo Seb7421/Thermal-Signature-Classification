@@ -35,7 +35,7 @@ class SequenceBasedDatasetCreator:
         self.elephant_img_dir = self.base_dir / "elephant_images"
         
         # Output paths
-        self.output_dir = self.base_dir.parent / "birdsai_data"
+        self.output_dir = self.base_dir / "birdsai_data"
         (self.output_dir / "train" / "images").mkdir(parents=True, exist_ok=True)
         (self.output_dir / "val" / "images").mkdir(parents=True, exist_ok=True)
         (self.output_dir / "test" / "images").mkdir(parents=True, exist_ok=True)
@@ -262,34 +262,9 @@ class SequenceBasedDatasetCreator:
     def _sample_images_from_splits(self, train_sequences, val_sequences, test_sequences):
         """Sample images from each split to achieve target size with class balance."""
         # First, calculate total sizes
-        # Ensure we have at least some data in each split if possible
-        min_size_per_split = 10
-        
-        # If we have less than the target size, adjust proportionally
-        estimated_total_available = 0
-        for seq_dict in [train_sequences, val_sequences, test_sequences]:
-            for images in seq_dict.values():
-                estimated_total_available += len(images)
-        
-        target_to_use = min(self.target_size, estimated_total_available)
-        
-        if target_to_use < 3 * min_size_per_split:
-            # Not enough data for all splits, prioritize train
-            if target_to_use < min_size_per_split:
-                # Too little data, put everything in train
-                total_train_size = target_to_use
-                total_val_size = 0
-                total_test_size = 0
-            else:
-                # Try to have at least some validation data
-                total_train_size = target_to_use - min_size_per_split
-                total_val_size = min_size_per_split
-                total_test_size = 0
-        else:
-            # Normal case - use the ratios
-            total_train_size = int(target_to_use * self.train_ratio)
-            total_val_size = int(target_to_use * self.val_ratio)
-            total_test_size = target_to_use - total_train_size - total_val_size
+        total_train_size = int(self.target_size * self.train_ratio)
+        total_val_size = int(self.target_size * self.val_ratio)
+        total_test_size = self.target_size - total_train_size - total_val_size
         
         # Get all images from each split
         train_human_images = []
@@ -379,14 +354,6 @@ class SequenceBasedDatasetCreator:
     
     def _process_split(self, images, split_name):
         """Process a split of images and annotations."""
-        # Check if we have any images for this split
-        if not images:
-            print(f"Warning: No images for {split_name} split")
-            # Create an empty annotations file to prevent errors
-            annotations_df = pd.DataFrame(columns=self.columns)
-            annotations_df.to_csv(self.output_dir / split_name / "annotations.csv", index=False)
-            return
-            
         annotations = []
         for i, img_data in enumerate(tqdm(images, desc=f"Processing {split_name} images")):
             # Create output image name and path
@@ -435,40 +402,25 @@ class SequenceBasedDatasetCreator:
         # Choose samples from all splits
         sample_selections = []
         
-        # Helper to safely read CSV and handle empty files
-        def safe_read_csv(file_path):
-            try:
-                if file_path.exists() and file_path.stat().st_size > 0:
-                    return pd.read_csv(file_path)
-                else:
-                    print(f"Warning: File {file_path} is empty or doesn't exist.")
-                    return pd.DataFrame()
-            except pd.errors.EmptyDataError:
-                print(f"Warning: No data found in {file_path}")
-                return pd.DataFrame()
-        
         # Get samples from train set
-        train_file = self.output_dir / "train" / "annotations.csv"
-        train_df = safe_read_csv(train_file)
-        train_frames = train_df["frame_number"].unique() if not train_df.empty else []
+        train_df = pd.read_csv(self.output_dir / "train" / "annotations.csv")
+        train_frames = train_df["frame_number"].unique()
         train_samples = min(num_samples // 3, len(train_frames))
         if train_samples > 0:
             train_selected = random.sample(list(train_frames), train_samples)
             sample_selections.extend([("train", frame) for frame in train_selected])
         
         # Get samples from val set
-        val_file = self.output_dir / "val" / "annotations.csv"
-        val_df = safe_read_csv(val_file)
-        val_frames = val_df["frame_number"].unique() if not val_df.empty else []
+        val_df = pd.read_csv(self.output_dir / "val" / "annotations.csv")
+        val_frames = val_df["frame_number"].unique()
         val_samples = min(num_samples // 3, len(val_frames))
         if val_samples > 0:
             val_selected = random.sample(list(val_frames), val_samples)
             sample_selections.extend([("val", frame) for frame in val_selected])
         
         # Get samples from test set
-        test_file = self.output_dir / "test" / "annotations.csv"
-        test_df = safe_read_csv(test_file)
-        test_frames = test_df["frame_number"].unique() if not test_df.empty else []
+        test_df = pd.read_csv(self.output_dir / "test" / "annotations.csv")
+        test_frames = test_df["frame_number"].unique()
         test_samples = min(num_samples - train_samples - val_samples, len(test_frames))
         if test_samples > 0:
             test_selected = random.sample(list(test_frames), test_samples)
@@ -496,10 +448,6 @@ class SequenceBasedDatasetCreator:
                 annos_df = val_df
             else:
                 annos_df = test_df
-            
-            # Skip if empty dataframe
-            if annos_df.empty:
-                continue
                 
             frame_annos = annos_df[annos_df["frame_number"] == frame_num]
             
