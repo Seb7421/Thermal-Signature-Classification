@@ -1,0 +1,26 @@
+{
+  "target_size": 500,
+  "actual_dataset_size": 500,
+  "train_images": 350,
+  "val_images": 75,
+  "test_images": 75,
+  "human_images": 216,
+  "animal_images": 284,
+  "total_annotations": 1016,
+  "train_annotations": 631,
+  "val_annotations": 276,
+  "test_annotations": 109,
+  "human_annotations": 434,
+  "animal_annotations": 582,
+  "avg_annotations_per_image": 2.03,
+  "image_sources": {
+    "elephant": 209,
+    "human": 216,
+    "unknown_animal": 75
+  },
+  "species_distribution": {
+    "1": 306,
+    "0": 434,
+    "-1": 276
+  }
+}
