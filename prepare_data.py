@@ -34,7 +34,7 @@ class BalancedDatasetCreator:
         self.elephant_img_dir = self.base_dir / "elephant_images"
         
         # Output paths - now includes validation directory
-        self.output_dir = self.base_dir / "fair_dataset"
+        self.output_dir = self.base_dir / "birdsai_data"
         (self.output_dir / "train" / "images").mkdir(parents=True, exist_ok=True)
         (self.output_dir / "val" / "images").mkdir(parents=True, exist_ok=True)
         (self.output_dir / "test" / "images").mkdir(parents=True, exist_ok=True)
