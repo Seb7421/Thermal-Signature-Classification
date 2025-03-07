@@ -9,10 +9,10 @@ import shutil
 from tqdm import tqdm
 from collections import defaultdict
 
-class SequenceBasedDatasetCreator:
+class FrameBasedDatasetCreator:
     def __init__(self, base_dir=".", target_size=500, train_ratio=0.7, val_ratio=0.15):
         """
-        Create a balanced dataset for human vs animal classification with sequence-level splitting.
+        Create a balanced dataset for human vs animal classification with frame-level splitting.
         
         Args:
             base_dir: Base directory where all data is stored
@@ -46,19 +46,15 @@ class SequenceBasedDatasetCreator:
             "class", "species", "occlusion", "noise"
         ]
         
-        # For tracking sequences
-        self.human_sequences = defaultdict(list)
-        self.animal_sequences = defaultdict(list)
+        # For collecting all frames
+        self.human_frames = []
+        self.animal_frames = []
         
         # For statistics
         self.stats = {
             "total_found": 0,
             "human_found": 0,
             "animal_found": 0,
-            "human_sequences": 0,
-            "animal_sequences": 0,
-            "included_human": 0,
-            "included_animal": 0,
             "train_images": 0,
             "val_images": 0,
             "test_images": 0,
@@ -70,15 +66,15 @@ class SequenceBasedDatasetCreator:
             "species_distribution": {}
         }
     
-    def find_all_sequences(self):
-        """Find all images with annotations and group them by sequence."""
-        print("Finding all annotated sequences and images...")
+    def find_all_frames(self):
+        """Find all images with annotations and collect them by class."""
+        print("Finding all annotated frames...")
         
         # Process human annotations
         self._process_annotation_dir(
             self.human_anno_dir, 
             self.human_img_dir, 
-            self.human_sequences, 
+            self.human_frames, 
             is_human=True
         )
         
@@ -86,7 +82,7 @@ class SequenceBasedDatasetCreator:
         self._process_annotation_dir(
             self.unknown_anno_dir, 
             self.unknown_img_dir, 
-            self.animal_sequences, 
+            self.animal_frames, 
             is_human=False, 
             source="unknown_animal"
         )
@@ -95,27 +91,22 @@ class SequenceBasedDatasetCreator:
         self._process_annotation_dir(
             self.elephant_anno_dir, 
             self.elephant_img_dir, 
-            self.animal_sequences, 
+            self.animal_frames, 
             is_human=False, 
             source="elephant"
         )
         
         # Update statistics
-        human_images = sum(len(frames) for frames in self.human_sequences.values())
-        animal_images = sum(len(frames) for frames in self.animal_sequences.values())
+        self.stats["human_found"] = len(self.human_frames)
+        self.stats["animal_found"] = len(self.animal_frames)
+        self.stats["total_found"] = len(self.human_frames) + len(self.animal_frames)
         
-        self.stats["human_found"] = human_images
-        self.stats["animal_found"] = animal_images
-        self.stats["total_found"] = human_images + animal_images
-        self.stats["human_sequences"] = len(self.human_sequences)
-        self.stats["animal_sequences"] = len(self.animal_sequences)
-        
-        print(f"Found {self.stats['total_found']} annotated images across {len(self.human_sequences) + len(self.animal_sequences)} sequences:")
-        print(f"  - Human: {self.stats['human_found']} images in {self.stats['human_sequences']} sequences")
-        print(f"  - Animal: {self.stats['animal_found']} images in {self.stats['animal_sequences']} sequences")
+        print(f"Found {self.stats['total_found']} annotated images:")
+        print(f"  - Human: {self.stats['human_found']} images")
+        print(f"  - Animal: {self.stats['animal_found']} images")
     
-    def _process_annotation_dir(self, anno_dir, img_dir, sequence_dict, is_human=True, source="human"):
-        """Process all annotation files in a directory and group by sequence."""
+    def _process_annotation_dir(self, anno_dir, img_dir, frames_list, is_human=True, source="human"):
+        """Process all annotation files in a directory and collect frames."""
         class_value = 1 if is_human else 0
         
         for anno_file in anno_dir.glob("*.csv"):
@@ -127,7 +118,6 @@ class SequenceBasedDatasetCreator:
                 continue
                 
             df = pd.read_csv(anno_file, header=None, names=self.columns)
-            sequence_images = []
             
             # Group by frame number to get one entry per image
             for frame_id, frame_df in df.groupby("frame_number"):
@@ -145,45 +135,35 @@ class SequenceBasedDatasetCreator:
                         frame_df_fixed = frame_df.copy()
                         frame_df_fixed["class"] = class_value
                         
-                        # Store this image in its sequence
-                        sequence_images.append({
+                        # Store this frame
+                        frames_list.append({
                             "image_path": image_path,
                             "annotations": frame_df_fixed.to_dict("records"),
                             "source": source,
                             "sequence_id": sequence_id,
                             "frame_id": frame_id
                         })
-            
-            # Only add sequences that have at least some images
-            if sequence_images:
-                sequence_dict[sequence_id] = sequence_images
     
     def create_dataset(self):
-        """Create a balanced dataset with sequence-level split into train, val and test."""
-        print(f"Creating balanced dataset with sequence-level splitting...")
+        """Create a balanced dataset with frame-level split into train, val and test."""
+        print(f"Creating balanced dataset with frame-level splitting...")
         
-        # Step 1: Split sequences into train, val, test ensuring class balance
-        train_sequences, val_sequences, test_sequences = self._split_sequences()
+        # Split frames into train, val, test ensuring class balance
+        train_frames, val_frames, test_frames = self._split_frames()
         
-        # Step 2: Sample images from each split to reach target size
-        # while maintaining class balance
-        train_images, val_images, test_images = self._sample_images_from_splits(
-            train_sequences, val_sequences, test_sequences
-        )
-        
-        # Step 3: Process the images for each split
-        self._process_split(train_images, "train")
-        self._process_split(val_images, "val")
-        self._process_split(test_images, "test")
+        # Process the frames for each split
+        self._process_split(train_frames, "train")
+        self._process_split(val_frames, "val")
+        self._process_split(test_frames, "test")
         
         # Update total statistics
-        all_images = train_images + val_images + test_images
-        total_selected = len(all_images)
+        all_frames = train_frames + val_frames + test_frames
+        total_selected = len(all_frames)
         
-        # Calculate image sources
+        # Calculate frame sources
         source_counts = defaultdict(int)
-        for img in all_images:
-            source_counts[img["source"]] += 1
+        for frame in all_frames:
+            source_counts[frame["source"]] += 1
         
         # Calculate average annotations per image
         total_annotations = (self.stats["train_annotations"] + 
@@ -191,15 +171,18 @@ class SequenceBasedDatasetCreator:
                              self.stats["test_annotations"])
         avg_annotations = total_annotations / total_selected if total_selected > 0 else 0
         
+        # Calculate sequence distribution across splits
+        sequence_distribution = self._analyze_sequence_distribution(train_frames, val_frames, test_frames)
+        
         # Save metadata
         metadata = {
             "target_size": self.target_size,
             "actual_dataset_size": total_selected,
-            "train_images": len(train_images),
-            "val_images": len(val_images),
-            "test_images": len(test_images),
-            "human_images": sum(1 for img in all_images if img["annotations"][0]["class"] == 1),
-            "animal_images": sum(1 for img in all_images if img["annotations"][0]["class"] == 0),
+            "train_images": len(train_frames),
+            "val_images": len(val_frames),
+            "test_images": len(test_frames),
+            "human_images": sum(1 for frame in all_frames if frame["annotations"][0]["class"] == 1),
+            "animal_images": sum(1 for frame in all_frames if frame["annotations"][0]["class"] == 0),
             
             "total_annotations": total_annotations,
             "train_annotations": self.stats["train_annotations"],
@@ -210,7 +193,8 @@ class SequenceBasedDatasetCreator:
             "avg_annotations_per_image": round(avg_annotations, 2),
             
             "image_sources": dict(source_counts),
-            "species_distribution": self.stats["species_distribution"]
+            "species_distribution": self.stats["species_distribution"],
+            "sequence_distribution": sequence_distribution
         }
         
         with open(self.output_dir / "metadata.json", "w") as f:
@@ -220,152 +204,182 @@ class SequenceBasedDatasetCreator:
         print(f"Total images: {total_selected}")
         print(f"Total annotations: {total_annotations}")
         print(f"Average annotations per image: {avg_annotations:.2f}")
+        
+        # Print sequence distribution summary
+        print("\nSequence Distribution Summary:")
+        for seq_id, counts in sequence_distribution.items():
+            print(f"  Sequence {seq_id}: train={counts['train']}, val={counts['val']}, test={counts['test']}")
     
-    def _split_sequences(self):
-        """Split sequences into train, val, test ensuring class balance."""
-        # First, split human sequences
-        human_seq_ids = list(self.human_sequences.keys())
-        random.shuffle(human_seq_ids)
+    def _analyze_sequence_distribution(self, train_frames, val_frames, test_frames):
+        """Analyze how sequences are distributed across splits"""
+        sequence_distribution = {}
         
-        # Calculate splits for humans
-        train_idx = int(len(human_seq_ids) * self.train_ratio)
-        val_idx = int(len(human_seq_ids) * (self.train_ratio + self.val_ratio))
+        # Count frames from each sequence in each split
+        for frame in train_frames:
+            seq_id = frame["sequence_id"]
+            if seq_id not in sequence_distribution:
+                sequence_distribution[seq_id] = {"train": 0, "val": 0, "test": 0}
+            sequence_distribution[seq_id]["train"] += 1
+            
+        for frame in val_frames:
+            seq_id = frame["sequence_id"]
+            if seq_id not in sequence_distribution:
+                sequence_distribution[seq_id] = {"train": 0, "val": 0, "test": 0}
+            sequence_distribution[seq_id]["val"] += 1
+            
+        for frame in test_frames:
+            seq_id = frame["sequence_id"]
+            if seq_id not in sequence_distribution:
+                sequence_distribution[seq_id] = {"train": 0, "val": 0, "test": 0}
+            sequence_distribution[seq_id]["test"] += 1
         
-        human_train_seqs = {seq_id: self.human_sequences[seq_id] for seq_id in human_seq_ids[:train_idx]}
-        human_val_seqs = {seq_id: self.human_sequences[seq_id] for seq_id in human_seq_ids[train_idx:val_idx]}
-        human_test_seqs = {seq_id: self.human_sequences[seq_id] for seq_id in human_seq_ids[val_idx:]}
-        
-        # Then, split animal sequences
-        animal_seq_ids = list(self.animal_sequences.keys())
-        random.shuffle(animal_seq_ids)
-        
-        # Calculate splits for animals
-        train_idx = int(len(animal_seq_ids) * self.train_ratio)
-        val_idx = int(len(animal_seq_ids) * (self.train_ratio + self.val_ratio))
-        
-        animal_train_seqs = {seq_id: self.animal_sequences[seq_id] for seq_id in animal_seq_ids[:train_idx]}
-        animal_val_seqs = {seq_id: self.animal_sequences[seq_id] for seq_id in animal_seq_ids[train_idx:val_idx]}
-        animal_test_seqs = {seq_id: self.animal_sequences[seq_id] for seq_id in animal_seq_ids[val_idx:]}
-        
-        # Combine and return
-        train_sequences = {**human_train_seqs, **animal_train_seqs}
-        val_sequences = {**human_val_seqs, **animal_val_seqs}
-        test_sequences = {**human_test_seqs, **animal_test_seqs}
-        
-        print(f"Split sequences:")
-        print(f"  - Train: {len(train_sequences)} sequences ({len(human_train_seqs)} human, {len(animal_train_seqs)} animal)")
-        print(f"  - Validation: {len(val_sequences)} sequences ({len(human_val_seqs)} human, {len(animal_val_seqs)} animal)")
-        print(f"  - Test: {len(test_sequences)} sequences ({len(human_test_seqs)} human, {len(animal_test_seqs)} animal)")
-        
-        return train_sequences, val_sequences, test_sequences
+        return sequence_distribution
     
-    def _sample_images_from_splits(self, train_sequences, val_sequences, test_sequences):
-        """Sample images from each split to achieve target size with class balance."""
-        # First, calculate total sizes
-        total_train_size = int(self.target_size * self.train_ratio)
-        total_val_size = int(self.target_size * self.val_ratio)
-        total_test_size = self.target_size - total_train_size - total_val_size
+    def _split_frames(self):
+        """Split frames into train, val, test ensuring class balance and diverse sequence representation"""
+        print("Using frame-level splitting to ensure each sequence contributes to all splits...")
         
-        # Get all images from each split
-        train_human_images = []
-        train_animal_images = []
-        for seq_images in train_sequences.values():
-            if seq_images and seq_images[0]["annotations"][0]["class"] == 1:
-                train_human_images.extend(seq_images)
-            else:
-                train_animal_images.extend(seq_images)
+        # Group human frames by sequence
+        human_by_sequence = defaultdict(list)
+        for frame in self.human_frames:
+            human_by_sequence[frame["sequence_id"]].append(frame)
         
-        val_human_images = []
-        val_animal_images = []
-        for seq_images in val_sequences.values():
-            if seq_images and seq_images[0]["annotations"][0]["class"] == 1:
-                val_human_images.extend(seq_images)
-            else:
-                val_animal_images.extend(seq_images)
+        # Group animal frames by sequence
+        animal_by_sequence = defaultdict(list)
+        for frame in self.animal_frames:
+            animal_by_sequence[frame["sequence_id"]].append(frame)
         
-        test_human_images = []
-        test_animal_images = []
-        for seq_images in test_sequences.values():
-            if seq_images and seq_images[0]["annotations"][0]["class"] == 1:
-                test_human_images.extend(seq_images)
-            else:
-                test_animal_images.extend(seq_images)
+        # Initialize output splits
+        train_frames = []
+        val_frames = []
+        test_frames = []
         
-        # Sample balanced subsets for each split
-        train_images = self._sample_balanced_subset(
-            train_human_images, train_animal_images, total_train_size
-        )
+        # Calculate target sizes for each split
+        total_size = min(self.target_size, len(self.human_frames) + len(self.animal_frames))
+        train_size = int(total_size * self.train_ratio)
+        val_size = int(total_size * self.val_ratio)
+        test_size = total_size - train_size - val_size
         
-        val_images = self._sample_balanced_subset(
-            val_human_images, val_animal_images, total_val_size
-        )
+        # Set target sizes for each class in each split
+        # Aim for roughly 50/50 distribution between humans and animals
+        human_train_target = min(train_size // 2, len(self.human_frames))
+        animal_train_target = train_size - human_train_target
         
-        test_images = self._sample_balanced_subset(
-            test_human_images, test_animal_images, total_test_size
-        )
+        human_val_target = min(val_size // 2, len(self.human_frames) - human_train_target)
+        animal_val_target = val_size - human_val_target
         
-        # Update statistics
-        self.stats["train_images"] = len(train_images)
-        self.stats["val_images"] = len(val_images)
-        self.stats["test_images"] = len(test_images)
+        human_test_target = min(test_size // 2, len(self.human_frames) - human_train_target - human_val_target)
+        animal_test_target = test_size - human_test_target
+        
+        print(f"Target split sizes:")
+        print(f"  Train: {train_size} images ({human_train_target} human, {animal_train_target} animal)")
+        print(f"  Val: {val_size} images ({human_val_target} human, {animal_val_target} animal)")
+        print(f"  Test: {test_size} images ({human_test_target} human, {animal_test_target} animal)")
+        
+        # Function to split frames from one sequence across train/val/test
+        def split_sequence_frames(frames, train_ratio=0.7, val_ratio=0.15):
+            random.shuffle(frames)  # Randomize frames from this sequence
+            n = len(frames)
+            train_idx = int(n * train_ratio)
+            val_idx = int(n * (train_ratio + val_ratio))
+            
+            return frames[:train_idx], frames[train_idx:val_idx], frames[val_idx:]
+        
+        # Process human sequences
+        human_train, human_val, human_test = [], [], []
+        
+        for seq_id, frames in human_by_sequence.items():
+            seq_train, seq_val, seq_test = split_sequence_frames(frames, self.train_ratio, self.val_ratio)
+            human_train.extend(seq_train)
+            human_val.extend(seq_val)
+            human_test.extend(seq_test)
+        
+        # Process animal sequences
+        animal_train, animal_val, animal_test = [], [], []
+        
+        for seq_id, frames in animal_by_sequence.items():
+            seq_train, seq_val, seq_test = split_sequence_frames(frames, self.train_ratio, self.val_ratio)
+            animal_train.extend(seq_train)
+            animal_val.extend(seq_val)
+            animal_test.extend(seq_test)
+        
+        # Sample from each class to meet target sizes
+        def sample_frames(frames, target_size):
+            if len(frames) <= target_size:
+                return frames
+            return random.sample(frames, target_size)
+        
+        human_train = sample_frames(human_train, human_train_target)
+        animal_train = sample_frames(animal_train, animal_train_target)
+        
+        human_val = sample_frames(human_val, human_val_target)
+        animal_val = sample_frames(animal_val, animal_val_target)
+        
+        human_test = sample_frames(human_test, human_test_target)
+        animal_test = sample_frames(animal_test, animal_test_target)
+        
+        # Combine and shuffle each split
+        train_frames = human_train + animal_train
+        val_frames = human_val + animal_val
+        test_frames = human_test + animal_test
+        
+        random.shuffle(train_frames)
+        random.shuffle(val_frames)
+        random.shuffle(test_frames)
         
         # Log the split statistics
-        print(f"Sampled images:")
-        train_humans = sum(1 for img in train_images if img["annotations"][0]["class"] == 1)
-        train_animals = len(train_images) - train_humans
+        print(f"Split frames:")
+        train_humans = sum(1 for frame in train_frames if frame["annotations"][0]["class"] == 1)
+        train_animals = len(train_frames) - train_humans
         
-        val_humans = sum(1 for img in val_images if img["annotations"][0]["class"] == 1)
-        val_animals = len(val_images) - val_humans
+        val_humans = sum(1 for frame in val_frames if frame["annotations"][0]["class"] == 1)
+        val_animals = len(val_frames) - val_humans
         
-        test_humans = sum(1 for img in test_images if img["annotations"][0]["class"] == 1)
-        test_animals = len(test_images) - test_humans
+        test_humans = sum(1 for frame in test_frames if frame["annotations"][0]["class"] == 1)
+        test_animals = len(test_frames) - test_humans
         
-        print(f"  - Train: {len(train_images)} images ({train_humans} human, {train_animals} animal)")
-        print(f"  - Validation: {len(val_images)} images ({val_humans} human, {val_animals} animal)")
-        print(f"  - Test: {len(test_images)} images ({test_humans} human, {test_animals} animal)")
+        print(f"  - Train: {len(train_frames)} images ({train_humans} human, {train_animals} animal)")
+        print(f"  - Validation: {len(val_frames)} images ({val_humans} human, {val_animals} animal)")
+        print(f"  - Test: {len(test_frames)} images ({test_humans} human, {test_animals} animal)")
         
-        return train_images, val_images, test_images
+        # Count sequences in each split
+        train_sequences = set(frame["sequence_id"] for frame in train_frames)
+        val_sequences = set(frame["sequence_id"] for frame in val_frames)
+        test_sequences = set(frame["sequence_id"] for frame in test_frames)
+        
+        print(f"Sequence coverage:")
+        print(f"  - Train: {len(train_sequences)} sequences")
+        print(f"  - Validation: {len(val_sequences)} sequences")
+        print(f"  - Test: {len(test_sequences)} sequences")
+        
+        # Calculate sequence overlap
+        train_val_overlap = len(train_sequences.intersection(val_sequences))
+        train_test_overlap = len(train_sequences.intersection(test_sequences))
+        val_test_overlap = len(val_sequences.intersection(test_sequences))
+        all_overlap = len(train_sequences.intersection(val_sequences).intersection(test_sequences))
+        
+        print(f"Sequence overlap:")
+        print(f"  - Train/Val overlap: {train_val_overlap} sequences")
+        print(f"  - Train/Test overlap: {train_test_overlap} sequences")
+        print(f"  - Val/Test overlap: {val_test_overlap} sequences")
+        print(f"  - All splits overlap: {all_overlap} sequences")
+        
+        return train_frames, val_frames, test_frames
     
-    def _sample_balanced_subset(self, human_images, animal_images, target_size):
-        """Sample a balanced subset of images with the specified target size."""
-        if target_size <= 0:
-            return []
-        
-        # Aim for a balanced split but handle cases where one class has fewer images
-        half_target = target_size // 2
-        humans_available = len(human_images)
-        animals_available = len(animal_images)
-        
-        human_sample_size = min(half_target, humans_available)
-        animal_sample_size = min(target_size - human_sample_size, animals_available)
-        
-        # If we don't have enough animals, use more humans if available
-        if animal_sample_size < (target_size - human_sample_size):
-            human_sample_size = min(humans_available, target_size - animal_sample_size)
-        
-        # Sample and combine
-        sampled_humans = random.sample(human_images, human_sample_size) if human_sample_size > 0 else []
-        sampled_animals = random.sample(animal_images, animal_sample_size) if animal_sample_size > 0 else []
-        
-        combined = sampled_humans + sampled_animals
-        random.shuffle(combined)
-        
-        return combined
-    
-    def _process_split(self, images, split_name):
-        """Process a split of images and annotations."""
+    def _process_split(self, frames, split_name):
+        """Process a split of frames and annotations."""
         annotations = []
-        for i, img_data in enumerate(tqdm(images, desc=f"Processing {split_name} images")):
+        for i, frame_data in enumerate(tqdm(frames, desc=f"Processing {split_name} images")):
             # Create output image name and path
             img_filename = f"image_{i:06d}.jpg"
             img_output_path = self.output_dir / split_name / "images" / img_filename
             
             # Copy the image
-            img = cv2.imread(str(img_data["image_path"]))
+            img = cv2.imread(str(frame_data["image_path"]))
             cv2.imwrite(str(img_output_path), img)
             
             # Process annotations
-            for anno in img_data["annotations"]:
+            for anno in frame_data["annotations"]:
                 # Create a copy with updated frame number
                 anno_copy = anno.copy()
                 anno_copy["frame_number"] = i
@@ -390,7 +404,7 @@ class SequenceBasedDatasetCreator:
         annotations_df = pd.DataFrame(annotations)
         annotations_df.to_csv(self.output_dir / split_name / "annotations.csv", index=False)
         
-        print(f"Processed {split_name} split: {len(images)} images, {len(annotations)} annotations")
+        print(f"Processed {split_name} split: {len(frames)} images, {len(annotations)} annotations")
     
     def create_visualizations(self, num_samples=10):
         """Create visualizations of dataset samples."""
@@ -489,7 +503,7 @@ class SequenceBasedDatasetCreator:
     
     def run(self):
         """Run the full dataset creation process."""
-        self.find_all_sequences()
+        self.find_all_frames()
         self.create_dataset()
         self.create_visualizations()
         print("All done!")
@@ -497,5 +511,5 @@ class SequenceBasedDatasetCreator:
 # Create the dataset
 if __name__ == "__main__":
     # Change the ratios here for your preferred split
-    creator = SequenceBasedDatasetCreator(target_size=500, train_ratio=0.7, val_ratio=0.15)
+    creator = FrameBasedDatasetCreator(target_size=500, train_ratio=0.7, val_ratio=0.15)
     creator.run()
