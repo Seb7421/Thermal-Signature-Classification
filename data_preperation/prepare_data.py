@@ -236,8 +236,8 @@ class FrameBasedDatasetCreator:
         return sequence_distribution
     
     def _split_frames(self):
-        """Split frames into train, val, test ensuring class balance and diverse sequence representation"""
-        print("Using frame-level splitting to ensure each sequence contributes to all splits...")
+        """Split frames into train, val, test ensuring class balance and preserving sequence distribution"""
+        print("Using sequence-aware splitting to ensure balanced representation...")
         
         # Group human frames by sequence
         human_by_sequence = defaultdict(list)
@@ -260,8 +260,7 @@ class FrameBasedDatasetCreator:
         val_size = int(total_size * self.val_ratio)
         test_size = total_size - train_size - val_size
         
-        # Set target sizes for each class in each split
-        # Aim for roughly 50/50 distribution between humans and animals
+        # Target sizes for each class in each split (roughly 50/50 distribution)
         human_train_target = min(train_size // 2, len(self.human_frames))
         animal_train_target = train_size - human_train_target
         
@@ -277,6 +276,7 @@ class FrameBasedDatasetCreator:
         print(f"  Test: {test_size} images ({human_test_target} human, {animal_test_target} animal)")
         
         # Function to split frames from one sequence across train/val/test
+        # while preserving the desired ratios
         def split_sequence_frames(frames, train_ratio=0.7, val_ratio=0.15):
             random.shuffle(frames)  # Randomize frames from this sequence
             n = len(frames)
@@ -285,38 +285,96 @@ class FrameBasedDatasetCreator:
             
             return frames[:train_idx], frames[train_idx:val_idx], frames[val_idx:]
         
-        # Process human sequences
-        human_train, human_val, human_test = [], [], []
+        # Improved sampling approach that preserves sequence distribution
+        def stratified_sample(sequences_dict, target_size):
+            """Sample frames while maintaining sequence distribution"""
+            if not sequences_dict:
+                return []
+                
+            result = []
+            remaining = target_size
+            
+            # First pass: take frames from each sequence proportionally
+            sequence_counts = {seq_id: len(frames) for seq_id, frames in sequences_dict.items()}
+            total_frames = sum(sequence_counts.values())
+            
+            # Calculate target frames per sequence
+            sequence_targets = {}
+            for seq_id, count in sequence_counts.items():
+                # Calculate proportional target (e.g., if sequence has 10% of all frames,
+                # it should contribute 10% to the final result)
+                seq_target = max(1, int(round((count / total_frames) * target_size)))
+                sequence_targets[seq_id] = seq_target
+            
+            # Adjust to match the target_size (due to rounding)
+            total_targeted = sum(sequence_targets.values())
+            if total_targeted > target_size:
+                # Remove frames proportionally if we targeted too many
+                excess = total_targeted - target_size
+                # Sort sequences by size (largest first) to preferentially reduce larger sequences
+                sorted_seqs = sorted(sequence_targets.keys(), key=lambda s: sequence_targets[s], reverse=True)
+                
+                for i in range(excess):
+                    # Reduce target for the i-th largest sequence (with wraparound)
+                    seq_to_reduce = sorted_seqs[i % len(sorted_seqs)]
+                    if sequence_targets[seq_to_reduce] > 1:  # Don't reduce below 1
+                        sequence_targets[seq_to_reduce] -= 1
+            elif total_targeted < target_size:
+                # Add frames proportionally if we targeted too few
+                deficit = target_size - total_targeted
+                # Sort sequences by size (largest first) to preferentially increase larger sequences
+                sorted_seqs = sorted(sequence_targets.keys(), key=lambda s: sequence_targets[s], reverse=True)
+                
+                for i in range(deficit):
+                    # Increase target for the i-th largest sequence (with wraparound)
+                    seq_to_increase = sorted_seqs[i % len(sorted_seqs)]
+                    sequence_targets[seq_to_increase] += 1
+            
+            # Sample from each sequence according to calculated targets
+            for seq_id, target in sequence_targets.items():
+                frames = sequences_dict[seq_id]
+                if len(frames) <= target:
+                    # Take all frames if we need more than available
+                    sampled = frames
+                else:
+                    # Random sample otherwise
+                    sampled = random.sample(frames, target)
+                
+                result.extend(sampled)
+            
+            return result
+        
+        # Process human sequences to get candidate frames for each split
+        human_train_by_seq = {}
+        human_val_by_seq = {}
+        human_test_by_seq = {}
         
         for seq_id, frames in human_by_sequence.items():
             seq_train, seq_val, seq_test = split_sequence_frames(frames, self.train_ratio, self.val_ratio)
-            human_train.extend(seq_train)
-            human_val.extend(seq_val)
-            human_test.extend(seq_test)
+            human_train_by_seq[seq_id] = seq_train
+            human_val_by_seq[seq_id] = seq_val
+            human_test_by_seq[seq_id] = seq_test
         
-        # Process animal sequences
-        animal_train, animal_val, animal_test = [], [], []
+        # Process animal sequences to get candidate frames for each split
+        animal_train_by_seq = {}
+        animal_val_by_seq = {}
+        animal_test_by_seq = {}
         
         for seq_id, frames in animal_by_sequence.items():
             seq_train, seq_val, seq_test = split_sequence_frames(frames, self.train_ratio, self.val_ratio)
-            animal_train.extend(seq_train)
-            animal_val.extend(seq_val)
-            animal_test.extend(seq_test)
+            animal_train_by_seq[seq_id] = seq_train
+            animal_val_by_seq[seq_id] = seq_val
+            animal_test_by_seq[seq_id] = seq_test
         
-        # Sample from each class to meet target sizes
-        def sample_frames(frames, target_size):
-            if len(frames) <= target_size:
-                return frames
-            return random.sample(frames, target_size)
+        # Use stratified sampling to get final splits
+        human_train = stratified_sample(human_train_by_seq, human_train_target)
+        animal_train = stratified_sample(animal_train_by_seq, animal_train_target)
         
-        human_train = sample_frames(human_train, human_train_target)
-        animal_train = sample_frames(animal_train, animal_train_target)
+        human_val = stratified_sample(human_val_by_seq, human_val_target)
+        animal_val = stratified_sample(animal_val_by_seq, animal_val_target)
         
-        human_val = sample_frames(human_val, human_val_target)
-        animal_val = sample_frames(animal_val, animal_val_target)
-        
-        human_test = sample_frames(human_test, human_test_target)
-        animal_test = sample_frames(animal_test, animal_test_target)
+        human_test = stratified_sample(human_test_by_seq, human_test_target)
+        animal_test = stratified_sample(animal_test_by_seq, animal_test_target)
         
         # Combine and shuffle each split
         train_frames = human_train + animal_train
@@ -511,5 +569,5 @@ class FrameBasedDatasetCreator:
 # Create the dataset
 if __name__ == "__main__":
     # Change the ratios here for your preferred split
-    creator = FrameBasedDatasetCreator(target_size=500, train_ratio=0.7, val_ratio=0.15)
+    creator = FrameBasedDatasetCreator(target_size=700, train_ratio=0.7, val_ratio=0.15)
     creator.run()
