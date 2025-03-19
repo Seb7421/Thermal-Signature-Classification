@@ -578,88 +578,19 @@ def run_path_follower(model_path, use_camera=True, video_path=None):
 
 
 
+# STEP 1: Define the path to your video
+VIDEO_PATH = 'color_video.avi'  # Your video is in the same directory
+MODEL_PATH = 'rope_follower_model.pkl'  # Where to save the trained model
 
+# STEP 2: Train the model using your video
+# You can adjust sample_rate to control how many frames are used (lower = more frames)
+print("Starting training process...")
+train_from_video(VIDEO_PATH, MODEL_PATH, sample_rate=5)
 
+# STEP 3: Test the model on the video (visualization only, no robot control)
+print("\nTesting model on video...")
+run_path_follower(MODEL_PATH, use_camera=False, video_path=VIDEO_PATH)
 
-
-
-
-# Add this cell and run it to adjust the path follower parameters
-
-# Load the existing model
-with open('rope_follower_model.pkl', 'rb') as f:
-    model = pickle.load(f)
-
-# Create a modified path follower with adjusted parameters
-class AdjustedPathFollower(VideoBasedPathFollower):
-    def __init__(self, model_path, robot=None):
-        super().__init__(model_path, robot)
-        # Reduce turn speed significantly
-        self.turn_speed = 0.1  # Reduced from 0.2
-        self.base_speed = 0.3  # Reduced from 0.5
-        # Increase command smoothing window (was 5)
-        self.last_commands = deque(maxlen=10)
-        
-    def _execute_command(self, command, error=0):
-        """Override with more conservative turning behavior"""
-        if self.robot is None:
-            return
-        
-        # Make turns much more gentle
-        error_magnitude = abs(error)
-        
-        if command == 'forward':
-            self.robot.forward(speed=self.base_speed)
-            print(f"Command: FORWARD")
-        elif command == 'left':
-            # Much gentler turn
-            turn_speed = min(0.15, self.turn_speed + (error_magnitude / 1000.0) * 0.1)
-            self.robot.left(speed=turn_speed)
-            print(f"Command: LEFT | Speed: {turn_speed:.2f}")
-        elif command == 'right':
-            # Much gentler turn
-            turn_speed = min(0.15, self.turn_speed + (error_magnitude / 1000.0) * 0.1)
-            self.robot.right(speed=turn_speed)
-            print(f"Command: RIGHT | Speed: {turn_speed:.2f}")
-
-# Function to run with adjusted parameters
-def run_adjusted_follower():
-    # Initialize the robot
-    robot = motors.MotorsYukon(mecanum=False)
-    
-    # Use our adjusted follower instead
-    path_follower = AdjustedPathFollower('rope_follower_model.pkl', robot)
-    
-    # Set up display widgets
-    display_original = widgets.Image(format='jpeg', width='320px')
-    display_processed = widgets.Image(format='jpeg', width='320px')
-    layout = widgets.Layout(width='100%')
-    sidebyside = widgets.HBox([display_original, display_processed], layout=layout)
-    display(sidebyside)
-    
-    def bgr8_to_jpeg(image):
-        return bytes(cv2.imencode('.jpg', image)[1])
-    
-    # Use live camera feed
-    camera = Camera.instance()
-    camera.start()
-    
-    def process_camera_frame(change):
-        frame = change['new']
-        if frame is None:
-            return
-        
-        # Process the frame and control the robot
-        processed_frame, _ = path_follower.process_and_control(frame)
-        
-        # Update displays
-        display_original.value = bgr8_to_jpeg(cv2.resize(frame, (320, 240)))
-        display_processed.value = bgr8_to_jpeg(cv2.resize(processed_frame, (320, 240)))
-    
-    # Start observing camera frames
-    camera.observe(process_camera_frame, names='color_value')
-    
-    print("Adjusted path following started. Press Ctrl+C in the terminal to stop.")
-
-# Run with adjusted parameters
-run_adjusted_follower()
+# STEP 4: Uncomment the line below when you're ready to run on the real robot
+# print("\nRunning on the robot...")
+# run_path_follower(MODEL_PATH, use_camera=True)
